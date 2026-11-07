@@ -5,6 +5,14 @@ module ForemanKubevirt
     alias_attribute :hostname, :url
     alias_attribute :token, :password
     alias_attribute :namespace, :user
+
+    DEFAULT_PVC_ACCESS_MODE = 'ReadWriteOnce'.freeze
+    PVC_ACCESS_MODES = %w[ReadWriteOnce ReadWriteMany ReadOnlyMany ReadWriteOncePod].freeze
+    # FromStorageProfile: CDI fills the modes from the StorageProfile of the storage class.
+    STORAGE_PROFILE_MODE = 'FromStorageProfile'.freeze
+    PVC_VOLUME_MODES = (%w[Filesystem Block] + [STORAGE_PROFILE_MODE]).freeze
+    APPLY_STORAGE_PROFILE_LABEL = 'cdi.kubevirt.io/applyStorageProfile'.freeze
+
     validates :hostname, :api_port, :namespace, :token, :presence => true
     after_validation :validate_connectivity unless Rails.env.test?
 
@@ -122,6 +130,18 @@ module ForemanKubevirt
 
     def storage_classes_for_select
       storage_classes.map { |sc| OpenStruct.new(id: sc.name, description: "#{sc.name} (#{sc.provisioner})") }
+    end
+
+    def access_modes_for_select
+      [OpenStruct.new(id: '', description: _('Default (%s)') % DEFAULT_PVC_ACCESS_MODE)] +
+        PVC_ACCESS_MODES.map { |mode| OpenStruct.new(id: mode, description: mode) }
+    end
+
+    def volume_modes_for_select
+      [OpenStruct.new(id: '', description: _('Default (cluster)')),
+       OpenStruct.new(id: 'Filesystem', description: 'Filesystem'),
+       OpenStruct.new(id: 'Block', description: 'Block'),
+       OpenStruct.new(id: STORAGE_PROFILE_MODE, description: _('From the CDI StorageProfile of the storage class'))]
     end
 
     def new_volume(attrs = {})
@@ -267,6 +287,8 @@ module ForemanKubevirt
       vm_attrs[:volumes_attributes] = Hash[volumes.each_with_index.map do |volume, idx|
         attrs = volume.attributes.with_indifferent_access
         attrs[:bootable] = "true" if volume.bootable
+        attrs[:access_mode] = volume.access_mode
+        attrs[:volume_mode] = volume.volume_mode
         [idx.to_s, attrs]
       end]
 
@@ -432,13 +454,50 @@ module ForemanKubevirt
       raise ::Foreman::Exception.new _('Only one volume can be bootable') if volumes_attributes.count { |_, v| v[:bootable] == "true" } > 1
     end
 
-    def create_new_pvc(pvc_name, capacity, storage_class)
+    def create_new_pvc(pvc_name, capacity, storage_class, access_mode: nil, volume_mode: nil)
       capacity += "G" unless capacity.end_with? "G"
+      access_mode = access_mode.presence
+      volume_mode = volume_mode.presence
+
+      return create_pvc_from_storage_profile(pvc_name, capacity, storage_class, access_mode) if volume_mode == STORAGE_PROFILE_MODE
+
       client.pvcs.create(:name          => pvc_name,
                          :namespace     => namespace,
                          :storage_class => storage_class,
-                         :access_modes  => ['ReadWriteOnce'],
+                         :access_modes  => [access_mode || DEFAULT_PVC_ACCESS_MODE],
+                         :volume_mode   => volume_mode,
                          :requests      => { :storage => capacity })
+    end
+
+    # CDI renders the modes missing from a PVC (access modes and volume mode) from the StorageProfile
+    # of its storage class, when the PVC carries the applyStorageProfile label and its volume mode is
+    # FromStorageProfile. The label cannot be set through client.pvcs.create, so the claim is built here.
+    def create_pvc_from_storage_profile(pvc_name, capacity, storage_class, access_mode)
+      spec = {
+        :storageClassName => storage_class,
+        :volumeMode       => STORAGE_PROFILE_MODE,
+        :resources        => { :requests => { :storage => capacity } },
+      }
+      spec[:accessModes] = [access_mode] if access_mode
+      client.create_pvc(
+        :apiVersion => "v1",
+        :kind       => "PersistentVolumeClaim",
+        :metadata   => { :name => pvc_name, :namespace => namespace, :labels => { APPLY_STORAGE_PROFILE_LABEL => "true" } },
+        :spec       => spec
+      )
+    end
+
+    def validate_volume_modes(volumes_attributes)
+      volumes_attributes.each_value do |vol|
+        access_mode = vol[:access_mode].presence
+        volume_mode = vol[:volume_mode].presence
+        if access_mode && PVC_ACCESS_MODES.exclude?(access_mode)
+          raise ::Foreman::Exception.new(_("Access mode %{mode} is not valid, expected one of: %{modes}") % { :mode => access_mode, :modes => PVC_ACCESS_MODES.join(', ') })
+        end
+        if volume_mode && PVC_VOLUME_MODES.exclude?(volume_mode)
+          raise ::Foreman::Exception.new(_("Volume mode %{mode} is not valid, expected one of: %{modes}") % { :mode => volume_mode, :modes => PVC_VOLUME_MODES.join(', ') })
+        end
+      end
     end
 
     def delete_pvcs(volumes)
@@ -449,8 +508,8 @@ module ForemanKubevirt
       end
     end
 
-    def create_vm_volume(pvc_name, capacity, storage_class, boot_order)
-      create_new_pvc(pvc_name, capacity, storage_class)
+    def create_vm_volume(pvc_name, capacity, storage_class, boot_order, access_mode: nil, volume_mode: nil)
+      create_new_pvc(pvc_name, capacity, storage_class, access_mode: access_mode, volume_mode: volume_mode)
 
       volume = Fog::Kubevirt::Compute::Volume.new
       volume.type = 'persistentVolumeClaim'
@@ -478,6 +537,7 @@ module ForemanKubevirt
       return [] if volumes_attributes.blank?
 
       validate_volume_capacity(volumes_attributes)
+      validate_volume_modes(volumes_attributes)
       validate_only_single_bootable_volume(volumes_attributes)
 
       volumes = []
@@ -491,7 +551,8 @@ module ForemanKubevirt
         storage_class = v[:storage_class]
         boot_order = boot_order_for_pvc(options, v, image_provision)
 
-        volume = create_vm_volume(pvc_name, capacity, storage_class, boot_order)
+        volume = create_vm_volume(pvc_name, capacity, storage_class, boot_order,
+                                  access_mode: v[:access_mode], volume_mode: v[:volume_mode])
         volumes << volume
       end
 

@@ -14,6 +14,24 @@
                   :label_size => "col-md-2",
                   :disabled => !new_vm,
                   :class => "col-md-2" %>
+  <%= select_f f, :access_mode,
+                  compute_resource.access_modes_for_select,
+                  :id,
+                  :description,
+                  { },
+                  :label => _('Access mode'),
+                  :label_size => "col-md-2",
+                  :disabled => !new_vm,
+                  :class => "col-md-2" %>
+  <%= select_f f, :volume_mode,
+                  compute_resource.volume_modes_for_select,
+                  :id,
+                  :description,
+                  { },
+                  :label => _('Volume mode'),
+                  :label_size => "col-md-2",
+                  :disabled => !new_vm,
+                  :class => "col-md-2" %>
   <%= text_f f,:capacity, :label => _('Size (GB)'), :label_size => "col-md-2", :disabled => !new_vm, :class => "col-md-2 pvc-size" %>
 
   <% bootable = f.object.boot_order.nil? ? false : f.object.bootable %>

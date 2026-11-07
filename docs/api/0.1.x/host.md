@@ -51,6 +51,11 @@ body:
 * volumes_attributes: Describe the storage requirements for the virtual machine
     * name - the name of the persistent volume claim or the image
     * capacity - the amount of storage to claim when selecting a persistent volume claim
+    * access_mode - access mode of the new claim: ReadWriteOnce (default), ReadWriteMany, ReadOnlyMany or ReadWriteOncePod.
+      A VM can be live migrated only if its disks are ReadWriteMany
+    * volume_mode - volume mode of the new claim: Filesystem, Block, or FromStorageProfile. The default is the one of the cluster.
+      With FromStorageProfile, CDI renders the missing access mode and volume mode from the StorageProfile of the storage class
+      (the claim gets the label cdi.kubevirt.io/applyStorageProfile, needs the CDI WebhookPvcRendering feature gate)
 
 * interfaces_attributes: Describe the network configuration for the virtual machine. For each network interface contains:
    * compute_attributes

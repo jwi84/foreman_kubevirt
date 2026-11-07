@@ -173,6 +173,101 @@ class ForemanKubevirtTest < ActiveSupport::TestCase
       assert volume.bootable
     end
 
+    test "creates a PVC with ReadWriteOnce and the cluster default volume mode when no mode is given" do
+      record = new_kubevirt_vcr
+      client = mocked_client
+      record.stubs(:client).returns(client)
+
+      client.pvcs.expects(:create).with(has_entries(:access_modes => ['ReadWriteOnce'], :volume_mode => nil))
+
+      record.send(:create_new_pvc, "test-claim-1", "10", "local")
+    end
+
+    test "creates a PVC with the requested access mode and volume mode" do
+      record = new_kubevirt_vcr
+      client = mocked_client
+      record.stubs(:client).returns(client)
+
+      client.pvcs.expects(:create).with(has_entries(:access_modes => ['ReadWriteMany'], :volume_mode => 'Block'))
+
+      record.send(:create_new_pvc, "test-claim-1", "10", "local", access_mode: 'ReadWriteMany', volume_mode: 'Block')
+    end
+
+    test "creates a PVC rendered from the CDI StorageProfile" do
+      record = new_kubevirt_vcr
+      client = mocked_client
+      record.stubs(:client).returns(client)
+      record.stubs(:namespace).returns("vms")
+
+      client.pvcs.expects(:create).never
+      client.expects(:create_pvc).with do |pvc|
+        assert_equal "true", pvc[:metadata][:labels]['cdi.kubevirt.io/applyStorageProfile']
+        assert_equal "FromStorageProfile", pvc[:spec][:volumeMode]
+        assert_equal "10G", pvc[:spec][:resources][:requests][:storage]
+        assert_nil pvc[:spec][:accessModes]
+        true
+      end
+
+      record.send(:create_new_pvc, "test-claim-1", "10", "local", volume_mode: 'FromStorageProfile')
+    end
+
+    test "passes the modes of the volume attributes to the PVC of the VM" do
+      record = new_kubevirt_vcr
+      client = mocked_client
+      record.stubs(:client).returns(client)
+
+      client.pvcs.expects(:create).with(has_entries(:access_modes => ['ReadWriteMany'], :volume_mode => 'Block'))
+      client.vms.expects(:create)
+
+      record.create_vm({
+        :name => "test",
+        :volumes_attributes => { "0" => { :capacity => "10", :storage_class => "local", :bootable => "true", :access_mode => "ReadWriteMany", :volume_mode => "Block" } },
+        :interfaces_attributes => { "0" => { "cni_provider" => "multus", "network" => "default/network" } },
+      })
+    end
+
+    test "raises an error for an unknown access mode or volume mode" do
+      record = new_kubevirt_vcr
+      client = mocked_client
+      record.stubs(:client).returns(client)
+
+      assert_raises(Foreman::Exception) do
+        record.create_vm({ :name => "test", :volumes_attributes => { "0" => { :capacity => "10", :access_mode => "Everywhere" } } })
+      end
+      assert_raises(Foreman::Exception) do
+        record.create_vm({ :name => "test", :volumes_attributes => { "0" => { :capacity => "10", :volume_mode => "Raw" } } })
+      end
+    end
+
+    test "serializes the access mode and volume mode of the claim of an existing volume" do
+      record = new_kubevirt_vcr
+      client = mocked_client
+      record.stubs(:client).returns(client)
+
+      volume = Fog::Kubevirt::Compute::Volume.new
+      volume.type = 'persistentVolumeClaim'
+      volume.info = 'test-claim'
+
+      vm = stub(name: "test", volumes: [volume])
+      client.pvcs.stubs(:get).with('test-claim').returns(stub(access_modes: ['ReadWriteMany'], volume_mode: 'Block'))
+
+      attrs = record.send(:set_vm_volumes_attributes, vm, {})[:volumes_attributes]["0"].with_indifferent_access
+
+      assert_equal 'ReadWriteMany', attrs[:access_mode]
+      assert_equal 'Block', attrs[:volume_mode]
+    end
+
+    test "keeps the requested modes on a new volume" do
+      record = new_kubevirt_vcr
+      client = mocked_client
+      record.stubs(:client).returns(client)
+
+      volume = record.new_volume({ :capacity => "10", :storage_class => "local", :access_mode => "ReadWriteMany", :volume_mode => "Block" })
+
+      assert_equal 'ReadWriteMany', volume.access_mode
+      assert_equal 'Block', volume.volume_mode
+    end
+
     test "raises an error for image based provisioning with only an extra data volume" do
       record = new_kubevirt_vcr
       client = mocked_client
