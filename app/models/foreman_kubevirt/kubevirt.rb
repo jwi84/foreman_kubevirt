@@ -12,6 +12,9 @@ module ForemanKubevirt
     STORAGE_PROFILE_MODE = 'FromStorageProfile'.freeze
     PVC_VOLUME_MODES = (%w[Filesystem Block] + [STORAGE_PROFILE_MODE]).freeze
     APPLY_STORAGE_PROFILE_LABEL = 'cdi.kubevirt.io/applyStorageProfile'.freeze
+    # Every VM boots with UEFI (OVMF) without secure boot, so that unsigned boot loaders still start.
+    # Merged by fog-kubevirt (>= 1.8.0) into spec.template.spec.domain of the VirtualMachine.
+    UEFI_DOMAIN = { :firmware => { :bootloader => { :efi => { :secureBoot => false } } } }.freeze
 
     validates :hostname, :api_port, :namespace, :token, :presence => true
     after_validation :validate_connectivity unless Rails.env.test?
@@ -218,7 +221,8 @@ module ForemanKubevirt
                           :volume_templates => volume_templates,
                           :cloudinit   => userdata_secret_ref(userdata_secret),
                           :networks    => networks,
-                          :interfaces  => interfaces)
+                          :interfaces  => interfaces,
+                          :extra_domain => UEFI_DOMAIN.deep_dup)
         vm = client.servers.get(options[:name])
         update_userdata_secret_owner(userdata_secret, options[:name], vm.uid) if userdata_secret.present?
         vm

@@ -66,6 +66,18 @@ class ForemanKubevirtTest < ActiveSupport::TestCase
       record.create_vm({ :name => "test", :volumes_attributes => { 0 => { :capacity => "5" } }, :interfaces_attributes => { "0" => { "cni_provider" => "multus", "network" => "default/network" } } })
     end
 
+    test "boots the VM with UEFI without secure boot" do
+      record = new_kubevirt_vcr
+      client = mocked_client
+      record.stubs(:client).returns(client)
+
+      client.vms.expects(:create).with do |args|
+        assert_equal({ :firmware => { :bootloader => { :efi => { :secureBoot => false } } } }, args[:extra_domain])
+      end
+
+      record.create_vm({ :name => "test", :volumes_attributes => { 0 => { :capacity => "5" } }, :interfaces_attributes => { "0" => { "cni_provider" => "multus", "network" => "default/network" } } })
+    end
+
     test "raises an error for image based provisioning without an explicit boot volume" do
       record = new_kubevirt_vcr
       client = mocked_client
