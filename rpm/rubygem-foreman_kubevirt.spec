@@ -1,0 +1,165 @@
+# template: foreman_plugin
+%global gem_name foreman_kubevirt
+%global plugin_name kubevirt
+%global foreman_min_version 3.13
+
+Name: rubygem-%{gem_name}
+Version: 0.6.0
+Release: 2.2%{?foremandist}%{?dist}
+Summary: Provision and manage Kubevirt Virtual Machines from Foreman
+License: GPLv3
+URL: https://github.com/theforeman/foreman_kubevirt
+# The gem is built from the source tree of this repository by rpm/build.sh (gem build foreman_kubevirt.gemspec):
+# PVC access mode and volume mode, boot order of a network install, UEFI boot.
+Source0: %{gem_name}-%{version}.gem
+
+# start specfile generated dependencies
+Requires: foreman >= %{foreman_min_version}
+BuildRequires: foreman-assets >= %{foreman_min_version}
+BuildRequires: foreman-plugin >= %{foreman_min_version}
+Requires: ruby >= 2.5
+Requires: ruby < 4.0
+BuildRequires: ruby >= 2.5
+BuildRequires: ruby < 4.0
+BuildRequires: rubygems-devel
+BuildRequires: (rubygem(fog-kubevirt) >= 1.8.0 with rubygem(fog-kubevirt) < 2)
+BuildArch: noarch
+Provides: foreman-plugin-%{plugin_name} = %{version}
+# end specfile generated dependencies
+
+%description
+Provision and manage Kubevirt Virtual Machines from Foreman.
+
+
+%package doc
+Summary: Documentation for %{name}
+Requires: %{name} = %{version}-%{release}
+BuildArch: noarch
+
+%description doc
+Documentation for %{name}.
+
+%prep
+%setup -q -n  %{gem_name}-%{version}
+
+%build
+# Create the gem as gem install only works on a gem file
+gem build ../%{gem_name}-%{version}.gemspec
+
+# %%gem_install compiles any C extensions and installs the gem into ./%%gem_dir
+# by default, so that we can move it into the buildroot in %%install
+%gem_install
+
+%install
+mkdir -p %{buildroot}%{gem_dir}
+cp -a .%{gem_dir}/* \
+        %{buildroot}%{gem_dir}/
+
+%foreman_bundlerd_file
+%foreman_precompile_plugin -s
+
+%files
+%dir %{gem_instdir}
+%license %{gem_instdir}/LICENSE
+%{gem_instdir}/app
+%{gem_instdir}/config
+%{gem_libdir}
+%{gem_instdir}/locale
+%exclude %{gem_cache}
+%{gem_spec}
+%{foreman_bundlerd_plugin}
+%{foreman_assets_plugin}
+%{foreman_assets_foreman}
+
+%files doc
+%doc %{gem_docdir}
+%doc %{gem_instdir}/README.md
+%{gem_instdir}/Rakefile
+%{gem_instdir}/test
+
+%posttrans
+%{foreman_plugin_log}
+
+%changelog
+* Sat Nov 07 2026 jwi84 <36655319+jwi84@users.noreply.github.com> - 0.6.0-2.2
+- Boot the VMs with UEFI (OVMF) without secure boot
+- Require fog-kubevirt 1.8.0 or later (extra_domain)
+
+* Wed Nov 04 2026 jwi84 <36655319+jwi84@users.noreply.github.com> - 0.6.0-2.1
+- Add access_mode and volume_mode to the PVC volume attributes (upstream issue #206)
+- Keep bootable volumes consistent (upstream pull request #202)
+
+* Fri Jul 31 2026 Zach Huntington-Meath <zhunting@redhat.com> - 0.6.0-2
+- Rebuild for EL10
+
+* Tue Mar 17 2026 Foreman Packaging Automation <packaging@theforeman.org> - 0.6.0-1
+- Update to 0.6.0
+
+* Tue Mar 10 2026 Foreman Packaging Automation <packaging@theforeman.org> - 0.5.4-1
+- Update to 0.5.4
+
+* Wed Mar 04 2026 Foreman Packaging Automation <packaging@theforeman.org> - 0.5.3-1
+- Update to 0.5.3
+
+* Wed Feb 18 2026 Foreman Packaging Automation <packaging@theforeman.org> - 0.5.2-1
+- Update to 0.5.2
+
+* Wed Feb 11 2026 Foreman Packaging Automation <packaging@theforeman.org> - 0.5.1-1
+- Update to 0.5.1
+
+* Tue Feb 10 2026 Foreman Packaging Automation <packaging@theforeman.org> - 0.5.0-1
+- Update to 0.5.0
+
+* Fri Jan 30 2026 Foreman Packaging Automation <packaging@theforeman.org> - 0.4.3-1
+- Update to 0.4.3
+
+* Wed Jan 28 2026 Foreman Packaging Automation <packaging@theforeman.org> - 0.4.2-1
+- Update to 0.4.2
+
+* Thu Feb 20 2025 Foreman Packaging Automation <packaging@theforeman.org> - 0.4.1-1
+- Update to 0.4.1
+
+* Wed Feb 12 2025 Foreman Packaging Automation <packaging@theforeman.org> - 0.4.0-1
+- Update to 0.4.0
+
+* Fri Dec 06 2024 Ewoud Kohl van Wijngaarden <ewoud@kohlvanwijngaarden.nl> - 0.3.0-1
+- Update to 0.3.0
+
+* Tue Mar 26 2024 Foreman Packaging Automation <packaging@theforeman.org> - 0.2.0-1
+- Update to 0.2.0
+
+* Sun Mar 10 2024 nofaralfasi <nalfassi@redhat.com> 0.1.9-6
+- Regenerate spec file based on the latest template
+
+* Wed Aug 24 2022 Evgeni Golov - 0.1.9-5
+- Refs #35409 - Include sprockets assets
+
+* Mon May 09 2022 Evgeni Golov - 0.1.9-4
+- log plugin installation in posttrans
+
+* Fri Apr 22 2022 Eric D. Helms <ericdhelms@gmail.com> - 0.1.9-3
+- Stop generaing apipie cache
+
+* Tue Apr 06 2021 Eric D. Helms <ericdhelms@gmail.com> - 0.1.9-2
+- Rebuild plugins for Ruby 2.7
+
+* Thu Jan 21 2021 Shira Maximov <shiramaximov@gmail.com> 0.1.9-1
+- Update to 0.1.9
+
+* Wed Jun 24 2020 Shira Maximov <shiramaximov@gmail.com> 0.1.8-1
+- Update to 0.1.8
+
+* Fri Jan 17 2020 Eric D. Helms <ericdhelms@gmail.com> - 0.1.7-2
+- Drop posttrans macros
+
+* Mon Nov 11 2019 Shira Maximov <shiramaximov@gmail.com> 0.1.7-1
+- Update to 0.1.7
+
+* Mon Jul 01 2019 Shira Maximov <shiramaximov@gmail.com> 0.1.4-1
+- Update to 0.1.4
+
+* Wed May 15 2019 Moti Asayag <masayag@redhat.com> 0.1.3-1
+- Update to 0.1.3
+
+* Tue Apr 30 2019 Moti Asayag <masayag@redhat.com> 0.1.2-1
+- Add rubygem-foreman_kubevirt generated by gem2rpm using the foreman_plugin template

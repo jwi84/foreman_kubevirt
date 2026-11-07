@@ -1,162 +1,104 @@
+# foreman_kubevirt, patched for live migratable UEFI VMs
 
-# Foreman Kubevirt Plugin
+A fork of [theforeman/foreman_kubevirt](https://github.com/theforeman/foreman_kubevirt) 0.6.0, the plugin that
+manages [KubeVirt](https://kubevirt.io) / OpenShift Virtualization as a compute resource in Foreman.
 
-The ```foreman_kubevirt ``` plugin enables managing of [KubeVirt](https://kubevirt.io) as a Compute Resource in Foreman.
+This version changes how the plugin creates VMs, so that a VM installed by network boot (PXE and kickstart) on
+OpenShift Virtualization boots from its disk after the installation, uses UEFI, and can be live migrated.
+It is built for Foreman 5.0 on EL9 and was tested on OpenShift 4.22 with OpenShift Virtualization 4.22.
 
-* Website: [TheForeman.org](http://theforeman.org)
-* Issues: [foreman Redmine](http://projects.theforeman.org/projects/kubevirt/issues/)
-* Community and support: #theforeman for general support, #theforeman-dev for development chat in [Freenode](irc.freenode.net)
-* Mailing lists:
-    * [foreman-users](https://groups.google.com/forum/?fromgroups#!forum/foreman-users)
-    * [foreman-dev](https://groups.google.com/forum/?fromgroups#!forum/foreman-dev)
+The packages are in [`rpm/out`](rpm/out). For everything else (what the plugin does, how to configure a compute
+resource) see the upstream project.
 
+## What changed
 
-## Installation
+### 1. Disk access mode and volume mode
 
-Please see the Foreman manual for appropriate instructions:
+Upstream always creates the disk claim of a VM as `ReadWriteOnce` and sends no volume mode
+([upstream issue #206](https://github.com/theforeman/foreman_kubevirt/issues/206)). On a storage class that needs
+`ReadWriteMany` with `Block` volumes (iSCSI, Ceph RBD), the VM can then never be live migrated.
 
-* [Foreman: How to Install a Plugin](https://theforeman.org/plugins/#2.Installation)
+Volume attributes accept two more keys:
 
+| Attribute | Values | Default |
+| --------- | ------ | ------- |
+| `access_mode` | `ReadWriteOnce`, `ReadWriteMany`, `ReadOnlyMany`, `ReadWriteOncePod` | `ReadWriteOnce` (as before) |
+| `volume_mode` | `Filesystem`, `Block`, `FromStorageProfile` | cluster default (as before) |
 
-### Building the plugin from source
-    # git clone https://github.com/theforeman/foreman_kubevirt
-    # cd foreman_kubevirt
-    # gem build foreman_kubevirt.gemspec # the output will be gem named foreman_kubevirt-x.y.z.gem, where x.y.z should be replaced with the actual version
+`FromStorageProfile` lets CDI choose both modes from the StorageProfile of the storage class
+(`ReadWriteMany` + `Block` on a storage class that declares it), which gives a live migratable VM without writing
+the modes in Foreman. It needs the CDI feature gate `WebhookPvcRendering`. Other values are refused with an error
+before anything is created. Without the new attributes nothing changes.
 
-### Installing the plugin
+The two attributes are also selects in the volume form (disabled once the VM exists), are read back from the claims
+of existing VMs, and appear in `GET /api/hosts/:id/vm_compute_attributes`. Example, in the compute attributes of a
+host or of a compute profile:
 
-#### Installing on Red Hat, CentOS, Fedora, Scientific Linux (rpm)
-    # sudo -i
-    # scl enable tfm bash
-    # yum -y install gcc-c++ redhat-rpm-config gcc rubygems rh-ruby25-ruby-devel-2.5 # or a matching version according to the installed ruby
-    # gem install foreman_kubevirt-x.y.z.gem # replace x.y.z with the actual version
-
-### Bundle (gem)
-
-Add the following to bundler.d/Gemfile.local.rb in your Foreman installation directory (/usr/share/foreman by default)
-
-    $ gem 'foreman_kubevirt'
-
-Or simply:
-
-    $ echo "gem 'foreman_kubevirt'" > /usr/share/foreman/bundler.d/Gemfile.local.rb
-
-Then run `bundle install` from the same directory
-
-#### Developing the plugin
-Add the following to bundler.d/Gemfile.local.rb in your Foreman development directory
-
-    $ gem 'foreman_kubevirt', :path => 'path to foreman_kubevirt directory'
-
-Then run `bundle install` from the same directory
-
--------------------
-To verify that the installation was successful, go to Foreman, top bar **Administer > About** and check *foreman_kubevirt* shows up in the **System Status** menu under the **Plugins** tab.
-
-## Compatibility
-
-
-
-| Foreman Version | Plugin Version |  Kubevirt API Version |
-| --------------- | --------------:|  -------------------- |
-| >= 1.21.x       | ~> 0.1.x       |  v1alpha3             |
-
-## Usage
-Go to **Infrastructure > Compute Resources** and click on **New Compute Resource**.
-Choose the **KubeVirt provider**, and fill in all the fields.
-
-Here is a short description of some of the fields:
-* *Namespace* - the virtual cluster on kubernetes to which the user has permissions as cluster-admin.
-* *Token* - a bearer token authentication for HTTP(s) calls.
-* *X509 Certification Authorities* - enables client certificate authentication for API server calls.
-
-### How to get values of *Token* and *X509 CA* ?
-
-#### Kubernetes
-##### *Token*:
-
-Either list the secrets and pick the one that contains the relevant token, or select a service account:
-
-List of secrets that contain the tokens and set secret name instead of *YOUR_SECRET*:
-```
-# kubectl get secrets
-# kubectl get secrets YOUR_SECRET -o jsonpath='{.data.token}' | base64 -d | xargs
+```json
+"volumes_attributes": {
+  "0": { "storage_class": "my-storage-class", "capacity": "40", "bootable": "true", "volume_mode": "FromStorageProfile" }
+}
 ```
 
-Or obtain token for a service account named 'foreman-account':
-```
-# KUBE_SECRET=`kubectl get sa foreman-account -o jsonpath='{.secrets[0].name}'`
-# kubectl get secrets $KUBE_SECRET -o jsonpath='{.data.token}' | base64 -d | xargs
-```
+### 2. Boot order of a network install
 
-##### *X509 CA*:
+Taken from [upstream pull request #202](https://github.com/theforeman/foreman_kubevirt/pull/202) by
+Pablo Méndez Hernández (commit kept with its author). With a bootable volume and a provisioning NIC, the NIC gets
+boot order 1 and the disk boot order 2: the VM boots from the network for the installation, and boots its disk once
+Foreman serves the local boot entry. No patch of the VM is needed after its creation.
 
-Taken from kubernetes admin config file:
-```
-# cat /etc/kubernetes/admin.conf | grep certificate-authority-data: | cut -d: -f2 | tr -d " " | base64 -d
-```
+### 3. UEFI
 
-Or by retrieving from the secret, via the service account (in this example assuming its name is *foreman-account*):
-```
-# KUBE_SECRET=`kubectl get sa foreman-account -o jsonpath='{.secrets[0].name}'`
-# kubectl get secret $KUBE_SECRET  -o jsonpath='{.data.ca\.crt}' | base64 -d
-```
+VMs are created with UEFI firmware (OVMF), Secure Boot off, so unsigned boot loaders such as `grub2/grubx64.efi`
+(PXE loader `Grub2 UEFI`) start. This is not configurable: every VM created by the plugin boots with UEFI. The
+machine type is not changed and existing VMs keep their firmware. It uses `extra_domain` of fog-kubevirt, so the gem
+requires `fog-kubevirt >= 1.8.0`.
 
-#### OpenShift
-##### *Token*:
+If you need to choose the firmware per VM (or add a virtual TPM), follow
+[upstream pull request #203](https://github.com/theforeman/foreman_kubevirt/pull/203), which does that.
 
-Create a privileged account named *my-account*:
-```
-# oc create -f https://raw.githubusercontent.com/ManageIQ/manageiq-providers-kubevirt/master/manifests/account-openshift.yml
-```
-Use *oc* tool for reading the token of the *my-account* service account under *default* namespace:
-`# oc sa get-token my-account -n default`
+## Install
 
-##### *X509 CA*:
-
-Taken from OpenShift admin config file:
-```
-# cat /etc/origin/master/openshift-master.kubeconfig | grep certificate-authority-data: | cut -d: -f2 | tr -d " " | base64 -d
+```sh
+sudo dnf install ./rubygem-foreman_kubevirt-0.6.0-2.2.fm5_0.el9.noarch.rpm
+sudo systemctl restart foreman
 ```
 
-Or by retrieving from the secret of service account *my-account* under the *default* namespace:
-```
-# KUBE_SECRET=`oc get sa my-account -n default -o jsonpath='{.secrets[0].name}'`
-# kubectl get secret $KUBE_SECRET -n default -o jsonpath='{.data.ca\.crt}' | base64 -d
-```
+The plugin stays enabled in the Foreman installer answers, no installer run is needed. The release `2.2` is newer
+than the official `0.6.0-2`. To keep the package when the official repository gets a newer one, add
+`exclude=rubygem-foreman_kubevirt*` to the `foreman-plugins` repository (or use `dnf versionlock`).
 
-## Documentation
+Rollback:
 
-See the [Foreman Kubevirt manuals](https://theforeman.org/plugins/foreman_kubevirt/) on the Foreman web site.
-
-## Tests
-
-Tests should be invoked from the *foreman* directory by:
-```
-# bundle exec rake test:foreman_kubevirt
+```sh
+sudo dnf downgrade rubygem-foreman_kubevirt-0.6.0-2.fm5_0.el9
+sudo systemctl restart foreman
 ```
 
-## TODO
+## Build the RPM
 
-* Implement VM Console
+```sh
+rpm/build.sh
+```
 
-## Contributing
+Needs `podman` and network access. It downloads the official source package, applies
+`rpm/rubygem-foreman_kubevirt.spec` and `rpm/foreman_kubevirt-pvc-modes.patch`, and builds in a Rocky Linux 9
+container with the Foreman 5.0 repositories. The packages end up in `rpm/out`.
 
-Fork and send a Pull Request. Thanks!
+## From source
 
-## Copyright
+The branch `patched` holds the changes as commits on top of upstream `master`
+(`4b89174`). Build the gem as upstream does:
 
-Copyright (c) 2018 Red Hat, Inc.
+```sh
+gem build foreman_kubevirt.gemspec
+```
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+## License
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
+[GPL-3.0](LICENSE), the license of the upstream project: this is a derivative work, so it keeps the same license.
+The changes of this fork are released under it too, copyright (C) 2026 jwi84.
 
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
+You can use, modify and redistribute the code and the packages for any purpose, commercial use included, free of
+charge. If you distribute a modified version, you must give its source under the GPL-3.0 as well. There is no
+warranty.
